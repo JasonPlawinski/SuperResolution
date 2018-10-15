@@ -1,3 +1,5 @@
+# Fourier and Edge Loss for GAN-Based Single Image Super Resolution
+
 This repository is part of the work I did during my year at Osaka University
 with the exchange program with FrontierLab@OsakaU. It was also presented at 
 MIRU 2018 in Sapporo on August 8th during the poster session.
