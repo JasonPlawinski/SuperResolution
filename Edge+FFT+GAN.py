@@ -368,6 +368,8 @@ See Poster or Abstract for easy and clear view of the architecture'''
         return out
         
 def main(opt):
+'''Main function to run training and saving weights'''
+    #test  if GPU available
     if not torch.cuda.is_available():
         raise Exception("No GPU found, please run without --cuda")
 
@@ -379,20 +381,26 @@ def main(opt):
     cudnn.benchmark = True
     
     print("===> Loading datasets")
+    #Allow Horizontal flips and crop the image to 256x256
     data_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(256),
         transforms.ToTensor()])
     
+    #Load the texture dataset
     train_set = datasets.ImageFolder(root='./Texture/Train/',transform=data_transform)
     training_data_loader = DataLoader(dataset=train_set, num_workers=opt.threads, batch_size=opt.batchSize*3, shuffle=True)
     test_set = datasets.ImageFolder(root='./Texture/Test/',transform=data_transform)
     testing_data_loader = DataLoader(dataset=test_set, num_workers=opt.threads, batch_size=opt.batchSize, shuffle=True)
     
+
     print("===> Building model")
     UPmodel = UpscaleNet()
     D = DNet()
+
+    #The Generator is not initialized with random weights but with weights trained using MSE exclusively
     UPmodel.load_state_dict(torch.load("./NetworkSaves/MSE_250.pt"))
+    #Declaration of Loss types
     criterionBCE = nn.BCELoss(size_average=True).cuda()
     criterionMSE = nn.MSELoss(size_average=True).cuda()
     criterionL1 = nn.L1Loss(size_average=True).cuda()
@@ -400,23 +408,27 @@ def main(opt):
     print("===> Setting GPU")
     UPmodel = UPmodel.cuda()
     D = D.cuda()
-    UPmodel_parameters = filter(lambda p: p.requires_grad, UPmodel.parameters())
 
     UPmodel_parameters = filter(lambda p: p.requires_grad, UPmodel.parameters())
     params = sum([np.prod(p.size()) for p in UPmodel_parameters])
     print("Learnable parameters in UpscaleNet :", params)
+
     D_parameters = filter(lambda p: p.requires_grad, D.parameters())
     params = sum([np.prod(p.size()) for p in D_parameters])
     print("Learnable parameters in Discriminator :", params)
     
+    #Optimizer and scheduler
+    #The learning rate decay is defined here
     print("===> Setting Optimizer")
     optimizer_Up = optim.Adam(UPmodel.parameters(), lr=opt.lr)
     optimizer_D = optim.Adam(D.parameters(), lr=opt.lr)
     scheduler_Up = lr_scheduler.StepLR(optimizer_Up, 225, gamma=0.1)
     scheduler_D = lr_scheduler.StepLR(optimizer_Up, 225, gamma=0.1)
     
+    #Initialisation of Sobel Loss
     Sobel = SobelLoss().cuda()
     
+    #Keeping track of the different loss
     print("===> Training")
     EpochLossList = []
     G_LossList = []
@@ -426,9 +438,12 @@ def main(opt):
     FFT_LossList =[]
     
     for epoch in range(0, opt.nEpochs + 1):
+        #Start training
         a = trainNetwork(training_data_loader, testing_data_loader, optimizer_Up, optimizer_D, UPmodel, D, Sobel, criterionMSE, criterionBCE, criterionL1, epoch, opt.batchSize, EpochLossList, G_LossList, D_LossList, MSE_LossList, S_LossList, FFT_LossList)
         if a == 0:
+        #If loss is inf or nan break
             break
+        #Update scheduler
         scheduler_Up.step()
         scheduler_D.step()
     
@@ -546,7 +561,8 @@ def trainNetwork(training_data_loader, testing_data_loader, optimizer_Up, optimi
             if epoch%275 == 0:
                 SRGname = "./NetworkSaves/GAN_Comb_4x_fixed" + str(epoch) + ".pt"
                 torch.save(UPmodel.state_dict(),SRGname)
-                
+    
+    #printing traning loss            
     LossMean = np.mean(np.array(LossList))
     MSEMean = np.mean(np.array(MSELossList))
     GMean = np.mean(np.array(GLossList))
