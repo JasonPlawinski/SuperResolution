@@ -59,7 +59,7 @@ Name and path of the file have to be input manually and cannot be specified as a
     #Transpose is needed because the image is saved with PIL image which indexes color channels on 1st component
     upLR = PixelUpscale(LR.numpy().transpose((1,2,0)))
     hrTarget = Target.numpy().transpose((1,2,0))
-    #PostprocessG recenters the image (intially from tanh so between -1 and 1), saturates values that are out of range for 
+    #PostprocessG recenters the image (intially between -1 and 1), saturates values that are out of range for 
     #for display and reorders component
     hrGenerated = PostprocessG(Generated)
     #Bicubic using skimage
@@ -98,7 +98,7 @@ Basically just expands from 1 to 3 component to display with other color images'
 
 def PostprocessG(Generated):
 '''Post processing of the Neural Net image
-Center from [-1, 1] (from tanh) to [0,1], saturates for dispaly reasons and from pytorch tensor to numpy array'''
+Center from [-1, 1] (Target Image is centered, Generator ends with a Convolutional layer) to [0,1], saturates for dispaly reasons and from pytorch tensor to numpy array'''
     HRTest= Generated.numpy().transpose((1,2,0))
     HRTest= (HRTest + np.ones_like(HRTest))*0.5
     HRTest[HRTest>1.0]=1.0
@@ -198,35 +198,48 @@ In this implementation the windows are of size 32x32 (out of a 256x256 image or 
         return out
     
 class UpscaleNet(nn.Module):
-'''Definition of the Super Resolution Network (Generator in Adversarial training)'''
+'''Definition of the Super Resolution Network (Generator in Adversarial training)
+All padding are Reflect Padding,
+Using Instance Normalisation
+16 ResBlocks (ch=64, k=3, LRelu, Instance Norm)
+Skip connection
+Upscaling with PixelShuffle (Fractional Convolution)
+'''
     def __init__(self):
         super(UpscaleNet, self).__init__()
-        
+        #Input is 3 Channels => to 64 channels (kernel size 9 stride 1)
         self.pad_input = nn.ReflectionPad2d(4)
         self.conv_input = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=9, stride=1, padding=0, bias=False)
         self.relu = nn.LeakyReLU(0.2, inplace=True)
-        
-        self.residual = self.make_layer(_Residual_Block, 16)
 
+        #Running 16 resBlocks        
+        self.residual = self.make_layer(_Residual_Block, 16)
+        
+        # Position of the Network wise skip connection(transfering spatial information from the low dimension image)
         self.pad_mid = nn.ReflectionPad2d(1)
         self.conv_mid = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=0, bias=False)
         self.bn_mid = nn.InstanceNorm2d(64)
 
+        #Upscale module with PixelShuffle (Fractional Convolution)
         self.upscale4x = nn.Sequential(
+            #using x2 two times to upscale by 4 times
             nn.ReflectionPad2d(1),
             nn.Conv2d(in_channels=64, out_channels=256, kernel_size=3, stride=1, padding=0, bias=False),
             nn.PixelShuffle(2),
             nn.LeakyReLU(0.2, inplace=True),
+
             nn.ReflectionPad2d(1),
             nn.Conv2d(in_channels=64, out_channels=256, kernel_size=3, stride=1, padding=0, bias=False),
             nn.PixelShuffle(2),
             nn.LeakyReLU(0.2, inplace=True),
         )
         
+        #Final convolution to aleviate artifacts from the upsampling and colapsing channels from 64 to 3
         self.pad_output = nn.ReflectionPad2d(4)
         self.conv_output = nn.Conv2d(in_channels=64, out_channels=3, kernel_size=9, stride=1, padding=0, bias=False)
-        
+    
         for m in self.modules():
+        #Initialisation of conv layers
             if isinstance(m, nn.Conv2d):
                 #init.orthogonal(m.weight, math.sqrt(2))
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -235,25 +248,35 @@ class UpscaleNet(nn.Module):
                     m.bias.data.zero_()
                 
     def make_layer(self, block, num_of_layer):
+    #Generate the ResBlocks
         layers = []
         for _ in range(num_of_layer):
             layers.append(block())
         return nn.Sequential(*layers)
 
     def forward(self, x):
+    #FeedForward
         out = self.relu(self.conv_input(self.pad_input(x)))
+        #save input conv for skip connection
         residual = out
+        #Apply ResBlocks
         out = self.residual(out)
         out = self.bn_mid(self.conv_mid(self.pad_mid(out)))
+        #Apply skip connection
         out = torch.add(out,residual)
+        #Upsclae
         out = self.upscale4x(out)
+        #Generate output
         out = self.conv_output(self.pad_output(out))
         return out
 
 class DNet(nn.Module):
+'''Discriminator Network as a Encoder
+See Poster or Abstract for easy and clear view of the architecture'''
     def __init__(self):
         super(DNet, self).__init__()
         
+        #Input from 3 to 64 channels
         self.conv_input = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1, bias=False)
         self.Lrelu = nn.LeakyReLU(0.2, inplace=True)
         
@@ -268,12 +291,14 @@ class DNet(nn.Module):
             nn.InstanceNorm2d(64)
         )
         
+        #Reduce the size of the image (stride = 2)
         self.Block1 = nn.Sequential(
             nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=2, padding=1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
             nn.InstanceNorm2d(64)
         )
         
+        #Augment the number of channels
         self.Block2 = nn.Sequential(
             nn.ReflectionPad2d(1),
             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1, bias=False),
@@ -281,12 +306,14 @@ class DNet(nn.Module):
             nn.InstanceNorm2d(128)
         )
         
+        #Reduce the size of the image (stride = 2)
         self.Block3 = nn.Sequential(
             nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=2, padding=1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
             nn.InstanceNorm2d(128)
         )
         
+        #Augment the number of channels
         self.Block4 = nn.Sequential(
             nn.ReflectionPad2d(1),
             nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=1, padding=1, bias=False),
@@ -294,6 +321,8 @@ class DNet(nn.Module):
             nn.InstanceNorm2d(256)
         )
         
+        #Augment the number of channels
+        #Reduce the size of the image (stride = 2)
         self.Block5 = nn.Sequential(
             nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=2, padding=1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
@@ -302,6 +331,10 @@ class DNet(nn.Module):
             nn.LeakyReLU(0.2, inplace=True)
         )
         
+        #Output is not a scalar but a small 2D matrix (1 channel), the Discriminator is a Patch GAN
+        #Patch GAN is very good in SR because the total coherence of the image is almost never lost but the small details are.
+        #We aim at a local reconstruction with context which is what a PatchGAN with a large receptive field can does
+        #Additionally it makes it so no fully connected layer is needed which makes the Network less memory heavy
         self.Block6 = nn.Sequential(
             nn.Conv2d(in_channels=256, out_channels=1, kernel_size=3, stride=1, padding=1, bias=False),
             nn.Sigmoid(),
@@ -324,33 +357,7 @@ class DNet(nn.Module):
                     m.bias.data.zero_()
 
     def forward(self, x):
-        out = self.Lrelu(self.conv_input(x))
-        out = self.Block0(out)
-        out = self.Block1(out)
-        out = self.Block2(out)
-        out = self.Block3(out)
-        out = self.Block4(out)
-        out = self.Block5(out)
-        out = self.Block6(out)
-        return out
-        
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                #init.orthogonal(m.weight, math.sqrt(2))
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-                if m.bias is not None:
-                    m.bias.data.zero_()
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                if m.bias is not None:
-                    m.bias.data.zero_()
-            elif isinstance(m, nn.Linear):
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-                if m.bias is not None:
-                    m.bias.data.zero_()
-
-    def forward(self, x):
+    #FeedForward
         out = self.Lrelu(self.conv_input(x))
         out = self.Block1(out)
         out = self.Block2(out)
