@@ -12,6 +12,6 @@ pretrained network. Pretrained Networks. The Texture Data set used for training.
 The poster and the extended abstract presented at MIRU are also available.
 
 The Idea of this contribution is to guide the GAN convergence using additional losses that focus on aspects the adversarial and Mean Squared Error (MSE) loss struggle. The Loss that showed success for that tasks were a Sobel Loss (1st order derivative of the image) and a frequency spectrum loss.
-The architecture comes for the most part from the article SRGAN by C. Ledig with a few improvements from the general advances of the machine learning community. 
+The architecture comes for the most part from the article SRGAN by C. Ledig (https://arxiv.org/abs/1609.04802) with a few improvements from the general advances of the machine learning community. 
 
 ![Screenshot](SRimg.png)
